@@ -193,27 +193,25 @@ func createCommit(opts *CommitOptions) error {
 
 func syncWithRemote(branchName string) error {
 	// First thing is run git fetch
-	cmd, _ := gitClient.Command(context.Background(), []string{"fetch"}...)
-	output, err := cmd.Output()
-	fmt.Println(output)
+	_, err := runGitCommandWithOutput([]string{"fetch"})
 	if err != nil {
 		return err
 	}
 	// Now stash the latest changes
-	_, err = gitClient.Command(context.Background(), []string{"stash", "push", "--include-untracked"}...)
+	_, err = runGitCommandWithOutput([]string{"stash", "push", "--include-untracked"})
 	if err != nil {
 		return err
 	}
-	_, err = gitClient.Command(context.Background(), []string{"checkout", branchName}...)
+	_, err = runGitCommandWithOutput([]string{"checkout", branchName})
 	if err != nil {
 		return err
 	}
-	_, err = gitClient.Command(context.Background(), []string{"pull"}...)
+	_, err = runGitCommandWithOutput([]string{"pull"})
 	if err != nil {
 		return err
 	}
 	// Apply the stash
-	_, err = gitClient.Command(context.Background(), []string{"stash", "pop"}...)
+	_, err = runGitCommandWithOutput([]string{"stash", "pop"})
 	if err != nil {
 		return err
 	}
