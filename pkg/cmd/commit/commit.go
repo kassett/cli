@@ -17,6 +17,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -191,25 +192,55 @@ func createCommit(opts *CommitOptions) error {
 	return nil
 }
 
-func syncWithRemote(branchName string, filesChanged []string) error {
+func syncWithRemote(branchName string, filesCommited []string) error {
 	// First thing is run git fetch
 	_, err := runGitCommandWithOutput([]string{"fetch"})
 	if err != nil {
 		return err
 	}
 
-	for _, file := range filesChanged {
-		_, err = runGitCommandWithOutput([]string{"checkout", fmt.Sprintf("origin/%s", branchName), "--", file})
-		if err != nil {
-			return err
-		}
-	}
-
-	_, err = runGitCommandWithOutput([]string{"checkout", branchName})
+	// Then list all files that could be overwritten
+	fileBackups, err := listFilesUsingPatterns([]string{"."}, false, false)
 	if err != nil {
 		return err
 	}
 
+	// Step 3: Copy files to a temporary directory
+	tempDir, err := copyFilesToTempDir(fileBackups)
+	if err != nil {
+		return fmt.Errorf("failed to backup files: %w", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempDir)
+
+	_, err = runGitCommandWithOutput([]string{"stash", "push", "--include-untracked"})
+	if err != nil {
+		return fmt.Errorf("failed to stash changes: %w", err)
+	}
+
+	_, err = runGitCommandWithOutput([]string{"checkout", branchName})
+	if err != nil {
+		return fmt.Errorf("failed to checkout branch %s: %w", branchName, err)
+	}
+
+	_, err = runGitCommandWithOutput([]string{"stash", "drop"})
+	if err != nil {
+		return fmt.Errorf("failed to drop stash: %w", err)
+	}
+
+	newChangedFileList, err := listFilesUsingPatterns([]string{"."}, false, false)
+	if err != nil {
+		return nil
+	}
+
+	for _, a := range newChangedFileList {
+		for _, b := range filesCommited {
+			if a == b {
+				return errors.New("conflict detected, please resolve the conflict before continuing")
+			}
+		}
+	}
 	return nil
 }
 
@@ -479,4 +510,44 @@ func getGitOutput(command []string) ([]string, error) {
 	}
 
 	return prunedList, nil
+}
+
+func copyFilesToTempDir(files []string) (string, error) {
+	tempDir, err := os.MkdirTemp("", "git-sync")
+	if err != nil {
+		return "", err
+	}
+
+	for _, file := range files {
+		// Ensure directories are created in the temp dir
+		relativePath := filepath.Dir(file)
+		if err := os.MkdirAll(filepath.Join(tempDir, relativePath), os.ModePerm); err != nil {
+			return "", err
+		}
+
+		// Copy file to temp dir
+		if err := copyFile(file, filepath.Join(tempDir, file)); err != nil {
+			return "", err
+		}
+	}
+
+	return tempDir, nil
+}
+
+// copyFile copies a file from src to dst
+func copyFile(src, dst string) error {
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+
+	destinationFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer destinationFile.Close()
+
+	_, err = io.Copy(destinationFile, sourceFile)
+	return err
 }
