@@ -5,9 +5,6 @@ import (
 	"github.com/cli/cli/v2/pkg/iostreams"
 	"github.com/google/shlex"
 	"github.com/stretchr/testify/assert"
-	"io/ioutil"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -95,85 +92,4 @@ func TestNewCmdCreate(t *testing.T) {
 			assert.Equal(t, tt.wants.DryRun, gotOpts.DryRun)
 		})
 	}
-}
-
-func TestSetupContext(t *testing.T) {
-
-}
-
-func TestCreateBlob(t *testing.T) {
-
-}
-
-func TestCreateTree(t *testing.T) {
-
-}
-
-func TestLatestCommit(t *testing.T) {
-
-}
-
-// Test_copyFilesToTempDir tests the copyFilesToTempDir function
-func Test_copyFilesToTempDir(t *testing.T) {
-	// Arrange: Create temporary files to act as input files
-	inputFiles := []string{
-		"testdir/file1.txt",
-		"testdir/nested/file2.txt",
-	}
-
-	// Create test files with sample content
-	for _, file := range inputFiles {
-		_ = os.MkdirAll(filepath.Dir(file), os.ModePerm)
-		err := os.WriteFile(file, []byte("test content"), os.ModePerm)
-		assert.NoError(t, err, "Failed to create test file: %s", file)
-	}
-	defer func() {
-		for _, file := range inputFiles {
-			_ = os.Remove(file)
-		}
-		_ = os.RemoveAll("testdir")
-	}()
-
-	// Act: Call the function
-	tempDir, err := copyFilesToTempDir(inputFiles)
-
-	assert.NoError(t, err, "Expected no error from copyFilesToTempDir")
-	assert.NotEmpty(t, tempDir, "Temp directory path should not be empty")
-
-	for _, file := range inputFiles {
-		tempFilePath := filepath.Join(tempDir, file)
-		assert.FileExists(t, tempFilePath, "Expected file to exist in temp directory: %s", tempFilePath)
-
-		// Verify file content
-		content, err := os.ReadFile(tempFilePath)
-		assert.NoError(t, err, "Failed to read temp file: %s", tempFilePath)
-		assert.Equal(t, "test content", string(content), "File content mismatch for: %s", tempFilePath)
-	}
-
-	_ = os.RemoveAll(tempDir)
-}
-
-func Test_copyFile(t *testing.T) {
-	sourceFileContent := []byte("Hello, world!")
-	sourceFileName := "source_test_file.txt"
-	destFileName := "dest_test_file.txt"
-
-	err := ioutil.WriteFile(sourceFileName, sourceFileContent, 0644)
-	assert.NoError(t, err, "Failed to create source file")
-
-	defer func() {
-		_ = os.Remove(sourceFileName)
-		_ = os.Remove(destFileName)
-	}()
-
-	err = copyFile(sourceFileName, destFileName)
-
-	assert.NoError(t, err, "copyFile should not return an error")
-	_, err = os.Stat(destFileName)
-	assert.NoError(t, err, "Destination file should exist")
-
-	// Check the content of the destination file
-	destFileContent, err := ioutil.ReadFile(destFileName)
-	assert.NoError(t, err, "Failed to read destination file")
-	assert.Equal(t, sourceFileContent, destFileContent, "File content should match")
 }

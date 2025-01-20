@@ -1,8 +1,6 @@
 package commit
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/cli/cli/v2/api"
@@ -13,10 +11,8 @@ import (
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/iostreams"
 	"github.com/spf13/cobra"
-	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 )
 
 var (
@@ -166,7 +162,7 @@ func createCommit(opts *commitOptions) error {
 			return err
 		}
 	}
-	treeTip, err := getTreeTip(latestCommit)
+	treeTip := getTreeTip(latestCommit)
 	if err != nil {
 		return err
 	}
@@ -195,99 +191,6 @@ func createCommit(opts *commitOptions) error {
 	}
 
 	return nil
-}
-
-func updateBranch(commitSha string, branchName string) error {
-	body := map[string]interface{}{
-		"sha": commitSha,
-	}
-	_, err := makeRequest(fmt.Sprintf("/git/refs/heads/%s", branchName), "POST", body, nil)
-	return err
-}
-
-// commitTree commits a tree based on the provided treeSha, latestCommit, and commitMessage
-func commitTree(treeSha string, latestCommit string, commitMessage string) (string, error) {
-	body := map[string]interface{}{
-		"message": commitMessage,
-		"tree":    treeSha,
-		"parents": []string{latestCommit},
-	}
-	var commit struct {
-		SHA string `json:"sha"`
-	}
-	_, err := makeRequest("/git/commits", "POST", body, &commit)
-	if err != nil {
-		return "", err
-	}
-
-	return commit.SHA, nil
-}
-
-// createNewBranch creates a new branch based on the provided commitSha and branchName
-func createNewBranch(commitSha string, branchName string) error {
-	body := map[string]interface{}{
-		"ref": fmt.Sprintf("refs/heads/%s", branchName),
-		"sha": commitSha,
-	}
-	_, err := makeRequest("/git/refs", "POST", body, nil)
-	return err
-}
-
-// createNewTree creates a new tree based on the provided treeSha and blobs
-func createNewTree(treeSha string, blobs []map[string]interface{}) (string, error) {
-	tree := map[string]interface{}{
-		"base_tree": treeSha,
-		"tree":      blobs,
-	}
-
-	var treeStruct struct {
-		SHA string `json:"sha"`
-	}
-	_, err := makeRequest("/git/trees", "POST", tree, &treeStruct)
-	if err != nil {
-		return "", err
-	}
-
-	return treeStruct.SHA, nil
-}
-
-// createBlobs creates blobs for the files provided
-func createBlobs(files []string) ([]map[string]interface{}, error) {
-	blobs := make([]map[string]interface{}, 0)
-	for _, file := range files {
-		if _, err := os.Stat(file); os.IsNotExist(err) {
-			blobs = append(blobs, map[string]interface{}{
-				"path": file,
-				"mode": "100644",
-				"type": "blob",
-				"sha":  nil,
-			})
-		} else {
-			data, _ := os.ReadFile(file)
-			encoded := base64.StdEncoding.EncodeToString(data)
-
-			var blobStruct struct {
-				SHA string `json:"sha"`
-			}
-
-			body := map[string]interface{}{
-				"content":  encoded,
-				"encoding": "base64",
-			}
-			_, err = makeRequest("/git/blobs", "POST", body, &blobStruct)
-			if err != nil {
-				return nil, err
-			}
-
-			blobs = append(blobs, map[string]interface{}{
-				"path": file,
-				"mode": "100644",
-				"type": "blob",
-				"sha":  blobStruct.SHA,
-			})
-		}
-	}
-	return blobs, nil
 }
 
 // listFilesForCommit returns a list of files to be committed based on the options provided
@@ -343,109 +246,4 @@ func makeRequest(endpoint, method string, body map[string]interface{}, data inte
 		return *responseMap, nil
 	}
 	return nil, nil
-}
-
-// writeToTempFile writes a map[string]interface{} to a temporary file in JSON format.
-func writeToTempFile(data map[string]interface{}) (*os.File, error) {
-	tmpFile, err := os.CreateTemp("", "body-*.json")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create temp file: %w", err)
-	}
-
-	encoder := json.NewEncoder(tmpFile)
-	if err := encoder.Encode(data); err != nil {
-		_ = tmpFile.Close()
-		return nil, fmt.Errorf("failed to write JSON to temp file: %w", err)
-	}
-
-	if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
-		_ = tmpFile.Close()
-		return nil, fmt.Errorf("failed to reset file pointer: %w", err)
-	}
-
-	return tmpFile, nil
-}
-
-// getTreeTip returns the sha of the tree tip based on the latest commit
-func getTreeTip(latestCommit string) (string, error) {
-	path := fmt.Sprintf("/git/trees/%s", latestCommit)
-	output, err := makeRequest(path, "GET", nil, nil)
-	if err != nil {
-		return "", err
-	}
-	return output["sha"].(string), nil
-}
-
-// getLatestCommit returns whether the branch exists, the sha of the latest commit (either to the branch if it exists, or the default branch), and any errors
-func getLatestCommit(defaultBranch string, branch string) (bool, string, error) {
-	var commitResponse struct {
-		Name   string `json:"name"`
-		Commit struct {
-			SHA string `json:"sha"`
-		} `json:"commit"`
-	}
-
-	_, err := makeRequest(fmt.Sprintf("/branches/%s", branch), "GET", nil, &commitResponse)
-	if err != nil {
-		var httpError api.HTTPError
-		if errors.As(err, &httpError) && (httpError.StatusCode != 404 || httpError.Message != "Branch not found") {
-			return false, "", err
-		}
-	} else {
-		return true, commitResponse.Commit.SHA, nil
-	}
-
-	var defaultCommitResponse struct {
-		Name   string `json:"name"`
-		Commit struct {
-			SHA string `json:"sha"`
-		} `json:"commit"`
-	}
-	_, err = makeRequest(fmt.Sprintf("/branches/%s", defaultBranch), "GET", nil, &defaultCommitResponse)
-	return false, defaultCommitResponse.Commit.SHA, nil
-}
-
-// copyFile copies a file from src to dst
-func copyFile(src, dst string) error {
-	sourceFile, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer func(sourceFile *os.File) {
-		_ = sourceFile.Close()
-	}(sourceFile)
-
-	destinationFile, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer func(destinationFile *os.File) {
-		_ = destinationFile.Close()
-	}(destinationFile)
-
-	_, err = io.Copy(destinationFile, sourceFile)
-	return err
-}
-
-// copyFilesToTempDir copies files to a temporary directory and returns the temp directory path
-func copyFilesToTempDir(files []string) (string, error) {
-	tempDir, err := os.MkdirTemp("", "git-sync")
-	if err != nil {
-		return "", err
-	}
-
-	for _, file := range files {
-		// Ensure directories are created in the temp dir
-		relativePath := filepath.Dir(file)
-		if err := os.MkdirAll(filepath.Join(tempDir, relativePath), os.ModePerm); err != nil {
-			return "", err
-		}
-
-		// Copy file to temp dir
-		if err := copyFile(file, filepath.Join(tempDir, file)); err != nil {
-			return "", err
-		}
-	}
-
-	return tempDir, nil
 }
