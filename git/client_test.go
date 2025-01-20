@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -730,14 +731,35 @@ func TestClientReadBranchConfig(t *testing.T) {
 		cmdExitStatus    int
 		cmdStdout        string
 		cmdStderr        string
-		wantCmdArgs      string
+		branch           string
 		wantBranchConfig BranchConfig
+		wantError        *GitError
 	}{
 		{
 			name:             "read branch config",
+			cmdExitStatus:    0,
 			cmdStdout:        "branch.trunk.remote origin\nbranch.trunk.merge refs/heads/trunk\nbranch.trunk.gh-merge-base trunk",
-			wantCmdArgs:      `path/to/git config --get-regexp ^branch\.trunk\.(remote|merge|gh-merge-base)$`,
-			wantBranchConfig: BranchConfig{LocalName: "trunk", RemoteName: "origin", MergeRef: "refs/heads/trunk", MergeBase: "trunk"},
+			branch:           "trunk",
+			wantBranchConfig: BranchConfig{RemoteName: "origin", MergeRef: "refs/heads/trunk", MergeBase: "trunk"},
+			wantError:        nil,
+		},
+		{
+			name:             "git config runs successfully but returns no output (Exit Code 1)",
+			cmdExitStatus:    1,
+			cmdStdout:        "",
+			cmdStderr:        "",
+			branch:           "trunk",
+			wantBranchConfig: BranchConfig{},
+			wantError:        nil,
+		},
+		{
+			name:             "output error (Exit Code > 1)",
+			cmdExitStatus:    2,
+			cmdStdout:        "",
+			cmdStderr:        "git error message",
+			branch:           "trunk",
+			wantBranchConfig: BranchConfig{},
+			wantError:        &GitError{},
 		},
 	}
 	for _, tt := range tests {
@@ -747,9 +769,85 @@ func TestClientReadBranchConfig(t *testing.T) {
 				GitPath:        "path/to/git",
 				commandContext: cmdCtx,
 			}
-			branchConfig := client.ReadBranchConfig(context.Background(), "trunk")
-			assert.Equal(t, tt.wantCmdArgs, strings.Join(cmd.Args[3:], " "))
+			branchConfig, err := client.ReadBranchConfig(context.Background(), tt.branch)
+			wantCmdArgs := fmt.Sprintf("path/to/git config --get-regexp ^branch\\.%s\\.(remote|merge|gh-merge-base)$", tt.branch)
+			assert.Equal(t, wantCmdArgs, strings.Join(cmd.Args[3:], " "))
 			assert.Equal(t, tt.wantBranchConfig, branchConfig)
+			if tt.wantError != nil {
+				assert.ErrorAs(t, err, &tt.wantError)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func Test_parseBranchConfig(t *testing.T) {
+	tests := []struct {
+		name             string
+		configLines      []string
+		wantBranchConfig BranchConfig
+	}{
+		{
+			name:        "remote branch",
+			configLines: []string{"branch.trunk.remote origin"},
+			wantBranchConfig: BranchConfig{
+				RemoteName: "origin",
+			},
+		},
+		{
+			name:        "merge ref",
+			configLines: []string{"branch.trunk.merge refs/heads/trunk"},
+			wantBranchConfig: BranchConfig{
+				MergeRef: "refs/heads/trunk",
+			},
+		},
+		{
+			name:        "merge base",
+			configLines: []string{"branch.trunk.gh-merge-base gh-merge-base"},
+			wantBranchConfig: BranchConfig{
+				MergeBase: "gh-merge-base",
+			},
+		},
+		{
+			name: "remote, merge ref, and merge base all specified",
+			configLines: []string{
+				"branch.trunk.remote origin",
+				"branch.trunk.merge refs/heads/trunk",
+				"branch.trunk.gh-merge-base gh-merge-base",
+			},
+			wantBranchConfig: BranchConfig{
+				RemoteName: "origin",
+				MergeRef:   "refs/heads/trunk",
+				MergeBase:  "gh-merge-base",
+			},
+		},
+		{
+			name: "remote URL",
+			configLines: []string{
+				"branch.Frederick888/main.remote git@github.com:Frederick888/playground.git",
+				"branch.Frederick888/main.merge refs/heads/main",
+			},
+			wantBranchConfig: BranchConfig{
+				MergeRef: "refs/heads/main",
+				RemoteURL: &url.URL{
+					Scheme: "ssh",
+					User:   url.User("git"),
+					Host:   "github.com",
+					Path:   "/Frederick888/playground.git",
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			branchConfig := parseBranchConfig(tt.configLines)
+			assert.Equal(t, tt.wantBranchConfig.RemoteName, branchConfig.RemoteName)
+			assert.Equal(t, tt.wantBranchConfig.MergeRef, branchConfig.MergeRef)
+			assert.Equal(t, tt.wantBranchConfig.MergeBase, branchConfig.MergeBase)
+			if tt.wantBranchConfig.RemoteURL != nil {
+				assert.Equal(t, tt.wantBranchConfig.RemoteURL.String(), branchConfig.RemoteURL.String())
+			}
 		})
 	}
 }

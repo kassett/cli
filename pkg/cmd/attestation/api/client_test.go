@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/cli/cli/v2/pkg/cmd/attestation/io"
+	"github.com/cli/cli/v2/pkg/cmd/attestation/test/data"
 
 	"github.com/stretchr/testify/require"
 )
@@ -20,20 +21,24 @@ func NewClientWithMockGHClient(hasNextPage bool) Client {
 	}
 	l := io.NewTestHandler()
 
+	httpClient := &mockHttpClient{}
+
 	if hasNextPage {
 		return &LiveClient{
-			api: mockAPIClient{
+			githubAPI: mockAPIClient{
 				OnRESTWithNext: fetcher.OnRESTSuccessWithNextPage,
 			},
-			logger: l,
+			httpClient: httpClient,
+			logger:     l,
 		}
 	}
 
 	return &LiveClient{
-		api: mockAPIClient{
+		githubAPI: mockAPIClient{
 			OnRESTWithNext: fetcher.OnRESTSuccess,
 		},
-		logger: l,
+		httpClient: httpClient,
+		logger:     l,
 	}
 }
 
@@ -134,11 +139,13 @@ func TestGetByDigest_NoAttestationsFound(t *testing.T) {
 		NumAttestations: 5,
 	}
 
+	httpClient := &mockHttpClient{}
 	c := LiveClient{
-		api: mockAPIClient{
+		githubAPI: mockAPIClient{
 			OnRESTWithNext: fetcher.OnRESTWithNextNoAttestations,
 		},
-		logger: io.NewTestHandler(),
+		httpClient: httpClient,
+		logger:     io.NewTestHandler(),
 	}
 
 	attestations, err := c.GetByRepoAndDigest(testRepo, testDigest, DefaultLimit)
@@ -158,7 +165,7 @@ func TestGetByDigest_Error(t *testing.T) {
 	}
 
 	c := LiveClient{
-		api: mockAPIClient{
+		githubAPI: mockAPIClient{
 			OnRESTWithNext: fetcher.OnRESTWithNextError,
 		},
 		logger: io.NewTestHandler(),
@@ -173,6 +180,86 @@ func TestGetByDigest_Error(t *testing.T) {
 	require.Nil(t, attestations)
 }
 
+func TestFetchBundleFromAttestations(t *testing.T) {
+	httpClient := &mockHttpClient{}
+	client := LiveClient{
+		httpClient: httpClient,
+		logger:     io.NewTestHandler(),
+	}
+
+	att1 := makeTestAttestation()
+	att2 := makeTestAttestation()
+	attestations := []*Attestation{&att1, &att2}
+	fetched, err := client.fetchBundleFromAttestations(attestations)
+	require.NoError(t, err)
+	require.Len(t, fetched, 2)
+	require.Equal(t, "application/vnd.dev.sigstore.bundle.v0.3+json", fetched[0].Bundle.GetMediaType())
+	httpClient.AssertNumberOfCalls(t, "OnGetSuccess", 2)
+}
+
+func TestFetchBundleFromAttestations_InvalidAttestation(t *testing.T) {
+	httpClient := &mockHttpClient{}
+	client := LiveClient{
+		httpClient: httpClient,
+		logger:     io.NewTestHandler(),
+	}
+
+	att1 := Attestation{}
+	attestations := []*Attestation{&att1}
+	fetched, err := client.fetchBundleFromAttestations(attestations)
+	require.Error(t, err)
+	require.Nil(t, fetched, 2)
+}
+
+func TestFetchBundleFromAttestations_Fail(t *testing.T) {
+	httpClient := &failAfterOneCallHttpClient{}
+
+	c := &LiveClient{
+		httpClient: httpClient,
+		logger:     io.NewTestHandler(),
+	}
+
+	att1 := makeTestAttestation()
+	att2 := makeTestAttestation()
+	attestations := []*Attestation{&att1, &att2}
+	fetched, err := c.fetchBundleFromAttestations(attestations)
+	require.Error(t, err)
+	require.Nil(t, fetched)
+	httpClient.AssertNumberOfCalls(t, "OnGetFailAfterOneCall", 2)
+}
+
+func TestFetchBundleFromAttestations_FetchByURLFail(t *testing.T) {
+	mockHTTPClient := &failHttpClient{}
+
+	c := &LiveClient{
+		httpClient: mockHTTPClient,
+		logger:     io.NewTestHandler(),
+	}
+
+	a := makeTestAttestation()
+	attestations := []*Attestation{&a}
+	bundle, err := c.fetchBundleFromAttestations(attestations)
+	require.Error(t, err)
+	require.Nil(t, bundle)
+	mockHTTPClient.AssertNumberOfCalls(t, "OnGetFail", 1)
+}
+
+func TestFetchBundleByURL_FallbackToBundleField(t *testing.T) {
+	mockHTTPClient := &mockHttpClient{}
+
+	c := &LiveClient{
+		httpClient: mockHTTPClient,
+		logger:     io.NewTestHandler(),
+	}
+
+	a := Attestation{Bundle: data.SigstoreBundle(t)}
+	attestations := []*Attestation{&a}
+	fetched, err := c.fetchBundleFromAttestations(attestations)
+	require.NoError(t, err)
+	require.Equal(t, "application/vnd.dev.sigstore.bundle.v0.3+json", fetched[0].Bundle.GetMediaType())
+	mockHTTPClient.AssertNotCalled(t, "OnGetSuccess")
+}
+
 func TestGetTrustDomain(t *testing.T) {
 	fetcher := mockMetaGenerator{
 		TrustDomain: "foo",
@@ -180,7 +267,7 @@ func TestGetTrustDomain(t *testing.T) {
 
 	t.Run("with returned trust domain", func(t *testing.T) {
 		c := LiveClient{
-			api: mockAPIClient{
+			githubAPI: mockAPIClient{
 				OnREST: fetcher.OnREST,
 			},
 			logger: io.NewTestHandler(),
@@ -193,7 +280,7 @@ func TestGetTrustDomain(t *testing.T) {
 
 	t.Run("with error", func(t *testing.T) {
 		c := LiveClient{
-			api: mockAPIClient{
+			githubAPI: mockAPIClient{
 				OnREST: fetcher.OnRESTError,
 			},
 			logger: io.NewTestHandler(),
@@ -213,10 +300,11 @@ func TestGetAttestationsRetries(t *testing.T) {
 	}
 
 	c := &LiveClient{
-		api: mockAPIClient{
+		githubAPI: mockAPIClient{
 			OnRESTWithNext: fetcher.FlakyOnRESTSuccessWithNextPageHandler(),
 		},
-		logger: io.NewTestHandler(),
+		httpClient: &mockHttpClient{},
+		logger:     io.NewTestHandler(),
 	}
 
 	attestations, err := c.GetByRepoAndDigest(testRepo, testDigest, DefaultLimit)
@@ -252,7 +340,7 @@ func TestGetAttestationsMaxRetries(t *testing.T) {
 	}
 
 	c := &LiveClient{
-		api: mockAPIClient{
+		githubAPI: mockAPIClient{
 			OnRESTWithNext: fetcher.OnREST500ErrorHandler(),
 		},
 		logger: io.NewTestHandler(),
